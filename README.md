@@ -47,3 +47,44 @@ Workflow](.github/workflows/build.yml) will take care of the rest.
 
 Please take care to update `CONFIG_LOCALVERSION` to distinguish your custom
 kernel from this one.
+
+## Enabling HFS+ in builds
+
+This repository includes a small kernel config fragment and helper scripts to
+enable HFS+ support in the kernel build. The fragment enables the HFS+ driver
+as a module (`CONFIG_HFSPLUS_FS=m`). Files added:
+
+- `kernel-config-fragments/hfsplus.cfg` — the config fragment containing
+  `CONFIG_HFSPLUS_FS=m`.
+- `scripts/enable-hfsplus.sh` — Linux shell helper to apply the fragment to
+  your kernel `.config` (uses `scripts/config` if available, otherwise edits
+  `.config` directly).
+- `scripts/enable-hfsplus.ps1` — PowerShell helper for Windows users.
+
+Usage (from the kernel source root where `.config` is located):
+
+Linux (bash):
+
+```bash
+# recommend running inside your kernel source tree
+./scripts/enable-hfsplus.sh
+make olddefconfig  # update any dependent options
+make -j$(nproc)
+```
+
+Windows PowerShell (when working with WSL or a Git-managed kernel tree):
+
+```powershell
+.
+\scripts\enable-hfsplus.ps1
+# then run make inside WSL or your Linux build environment
+```
+
+If you prefer to manually add the option, append `CONFIG_HFSPLUS_FS=m` to your
+`.config` and run `make olddefconfig` before building.
+
+Note: This repository does not contain the kernel source itself; you must run
+these scripts inside a WSL/Linux kernel source tree (for example, a local
+clone of `microsoft/WSL2-Linux-Kernel` or when using the build workflow from
+this repo). Enabling HFS+ as a module keeps the kernel smaller and allows the
+filesystem driver to be loaded only when needed.

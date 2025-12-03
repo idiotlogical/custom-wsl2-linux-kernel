@@ -1,0 +1,109 @@
+name: Apply HFS+ config fragment and build kernel
+
+# This workflow checks out a kernel source tree, applies the HFS+ config
+# fragment, builds `vmlinux` and kernel modules, and uploads build artifacts.
+# Adjust the kernel repository, ref, and build targets to match your project's CI.
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout this repository (contains fragment)
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/WSL2-Linux-Kernel
+          path: kernel-source
+          # Optionally set `ref:` to a tag/branch you build against
+
+      - name: Prepare environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev ccache
+
+      - name: Show kernel source top
+        run: ls -la kernel-source | sed -n '1,80p'
+
+      - name: Apply HFS+ config fragment
+        run: |
+          set -euo pipefail
+          FRAG=repo/kernel-config-fragments/hfsplus.cfg
+          TARGET=kernel-source/.config
+          if [ ! -f "$TARGET" ]; then
+            echo "No existing .config found in kernel source; copying defconfig if present"
+            if [ -f kernel-source/arch/x86/configs/defconfig ]; then
+              cp kernel-source/arch/x86/configs/defconfig $TARGET
+            else
+              echo "No defconfig found; creating new .config file"
+              touch $TARGET
+            fi
+          fi
+          # Append fragment (avoid duplicate lines)
+          grep -F -x -f "$FRAG" "$TARGET" >/dev/null 2>&1 || (cat "$FRAG" >> "$TARGET")
+          echo "Applied fragment contents:" && cat "$FRAG"
+          # If scripts/config exists, use it to set the symbol properly
+          if [ -x kernel-source/scripts/config ]; then
+            echo "Using kernel scripts/config to set symbol"
+            cp "$FRAG" /tmp/hfsfrag
+            while read -r line; do
+              # ignore empty lines and comments
+              [[ -z "$line" || "$line" =~ ^# ]] && continue
+              key=${line%%=*}
+              val=${line#*=}
+              case "$val" in
+                y) kernel-source/scripts/config --enable ${key#CONFIG_} ;;
+                m) kernel-source/scripts/config --module ${key#CONFIG_} ;;
+                *) kernel-source/scripts/config --set-val ${key#CONFIG_} "$val" || true ;;
+              esac
+            done < /tmp/hfsfrag
+            (cd kernel-source && make olddefconfig) || true
+          else
+            echo "No scripts/config; appended fragment. Run 'make olddefconfig' in your build environment if needed."
+          fi
+
+      - name: Build kernel and modules
+        run: |
+          set -euo pipefail
+          cd kernel-source
+          # Ensure config symbols are consistent
+          make olddefconfig
+          # Build vmlinux and modules (adjust targets/arch as needed)
+          MAKEFLAGS=-j$(nproc) make -j$(nproc) vmlinux modules
+
+      - name: Package modules and collect vmlinux
+        run: |
+          set -euo pipefail
+          OUT_DIR=out
+          mkdir -p $OUT_DIR
+          # Collect vmlinux
+          if [ -f kernel-source/vmlinux ]; then
+            cp kernel-source/vmlinux $OUT_DIR/
+          else
+            echo "Warning: vmlinux not found after build"
+          fi
+          # Install modules into a temporary directory then tar them
+          make -C kernel-source modules_install INSTALL_MOD_PATH=$PWD/$OUT_DIR/mods || true
+          if [ -d $OUT_DIR/mods ]; then
+            tar -C $OUT_DIR/mods -czf $OUT_DIR/modules.tar.gz . || true
+          else
+            echo "No modules installed to package"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsl-kernel-build
+          path: out
+
+      - name: Done
+        run: echo "Build job finished. Artifacts uploaded as 'wsl-kernel-build'"
